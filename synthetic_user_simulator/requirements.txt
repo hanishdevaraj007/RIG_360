@@ -1,0 +1,10 @@
+# Only dependencies actually imported by the code that exists so far.
+# Playwright, pytest-asyncio, etc. will be added in later stages when
+# the modules that need them are implemented -- not before.
+
+PyYAML>=6.0        # src/config/loader.py: yaml.safe_load for config.yaml
+pytest>=7.0         # tests/unit: test runner
+
+# NOTE: exact upper-bound pins have not been verified against current
+# PyPI availability in this session -- if `pip install` reports a
+# resolution error, tell me the exact error and I will not guess a fix.
