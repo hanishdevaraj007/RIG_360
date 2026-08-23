@@ -1,0 +1,19 @@
+# config/proxies.example.txt
+# One proxy per line. Example syntax only -- this is a placeholder
+# format (see README.md Section 14); replace with your real DNL test
+# proxy format when available. Lines starting with # and blank lines
+# are ignored. Used for DNL sessions only.
+#
+# Unauthenticated:
+#   host:port
+#
+# With explicit scheme:
+#   scheme://host:port          (scheme: http, https, socks4, socks5)
+#
+# Authenticated:
+#   scheme://username:password@host:port
+
+203.0.113.10:8080
+http://203.0.113.11:8080
+socks5://203.0.113.12:1080
+http://testuser:testpass@203.0.113.13:8080

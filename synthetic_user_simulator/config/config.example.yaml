@@ -1,0 +1,47 @@
+# config/config.example.yaml
+#
+# Example configuration -- copy to config/config.yaml and adjust.
+# Field reference: README.md Section 13.
+#
+# This example targets platform: youtube, since that is the only
+# platform with a working adapter so far (see README.md Section 23/24 --
+# DNLAdapter is pending your integration details). Do not point this at
+# a live/production stream without authorization; use your own staging
+# environment once platform: dnl is available.
+
+platform: youtube
+target_url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+# --- concurrency / ramp-up ---------------------------------------------
+num_sessions: 2
+max_concurrent_browsers: 2
+ramp_up_seconds: 5
+min_session_delay: 0
+max_session_delay: 2
+
+# --- watch duration -------------------------------------------------------
+min_watch_duration: 10
+max_watch_duration: 20
+
+# --- proxies (DNL only -- must stay disabled for platform: youtube) -------
+use_proxies: false
+proxy_file_path: null
+proxy_retry_attempts: 1
+
+# --- chat (DNL only -- must stay disabled for platform: youtube) ----------
+chat_enabled: false
+min_chat_messages: 0
+max_chat_messages: 0
+min_chat_interval: 5
+max_chat_interval: 15
+
+# --- YouTube-specific (best-effort, see README.md Section 25) -------------
+youtube_quality_preference: null
+
+# --- browser / run behavior ------------------------------------------------
+headless: true
+log_level: INFO
+
+# Set to an integer for reproducible randomized timing across runs;
+# leave null for normal (non-reproducible) randomization.
+random_seed: null

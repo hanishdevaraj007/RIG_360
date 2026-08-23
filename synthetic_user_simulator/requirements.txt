@@ -2,9 +2,15 @@
 # Playwright, pytest-asyncio, etc. will be added in later stages when
 # the modules that need them are implemented -- not before.
 
-PyYAML>=6.0        # src/config/loader.py: yaml.safe_load for config.yaml
-pytest>=7.0         # tests/unit: test runner
+PyYAML>=6.0          # src/config/loader.py: yaml.safe_load for config.yaml
+pytest>=7.0          # tests/unit: test runner
+pytest-asyncio>=0.21 # tests/unit: run/await async test functions (browser + adapter tests)
+playwright>=1.40     # src/browser/*, src/platforms/*: browser automation
 
 # NOTE: exact upper-bound pins have not been verified against current
 # PyPI availability in this session -- if `pip install` reports a
 # resolution error, tell me the exact error and I will not guess a fix.
+# The playwright>=1.40 pin is a conservative lower bound based on when
+# its async_api became stable, not a live-verified "latest compatible"
+# version -- confirm with `pip index versions playwright` if you want
+# the actual current release.
