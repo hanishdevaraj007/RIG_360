@@ -32,9 +32,12 @@ def test_get_adapter_youtube_returns_youtube_adapter():
     assert adapter.platform_name == "youtube"
 
 
-def test_get_adapter_dnl_raises_unsupported_with_helpful_message():
-    with pytest.raises(UnsupportedPlatformError, match="DNLAdapter is not implemented"):
-        get_adapter("dnl")
+def test_get_adapter_dnl_returns_dnl_adapter_stub():
+    from src.platforms.dnl import DNLAdapter
+
+    adapter = get_adapter("dnl")
+    assert isinstance(adapter, DNLAdapter)
+    assert adapter.platform_name == "dnl"
 
 
 def test_get_adapter_unknown_platform_raises():
@@ -277,3 +280,106 @@ async def test_run_one_session_marks_proxy_failure_on_platform_error(monkeypatch
         semaphore=asyncio.Semaphore(5),
     )
     assert proxy_manager.available_count == 0  # exhausted after 1 failure with max_retry_attempts=0
+
+
+# --- chat wiring (using a real DNLAdapter/DNLChatClient shape, but the
+# adapter/chat client themselves are faked -- DNLAdapter/DNLChatClient
+# are non-functional stubs, see test_dnl_adapter.py / test_chat.py) -----
+
+class FakeChatClientSuccess:
+    platform_name = "dnl"
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, page, message):
+        self.sent.append(message)
+
+
+class FakeChatClientFailsOnNth:
+    platform_name = "dnl"
+
+    def __init__(self, fail_on: int):
+        self.fail_on = fail_on
+        self.calls = 0
+
+    async def send_message(self, page, message):
+        self.calls += 1
+        if self.calls == self.fail_on:
+            from src.chat.base import ChatError
+
+            raise ChatError(f"simulated chat failure on message {self.fail_on}")
+
+
+@pytest.mark.asyncio
+async def test_run_one_session_sends_all_planned_chat_messages(monkeypatch):
+    monkeypatch.setattr(runner_module, "get_adapter", lambda platform: FakeAdapter(page_loaded=True))
+    fake_chat = FakeChatClientSuccess()
+    monkeypatch.setattr(runner_module, "get_chat_client", lambda platform: fake_chat)
+
+    session_config = make_session_config(
+        platform="dnl",
+        chat_enabled=True,
+        planned_chat_message_count=3,
+        min_chat_interval_seconds=0.01,
+        max_chat_interval_seconds=0.01,
+    )
+    result = await run_one_session(
+        session_config,
+        browser=object(),
+        proxy_manager=None,
+        console_logger=configure_console_logging("WARNING"),
+        randomizer=Randomizer(seed=1),
+        semaphore=asyncio.Semaphore(5),
+    )
+    assert result.status == SessionStatus.SUCCESS
+    assert result.chat_messages_sent == 3
+    assert len(fake_chat.sent) == 3
+
+
+@pytest.mark.asyncio
+async def test_run_one_session_chat_failure_marks_partial_not_failed(monkeypatch):
+    monkeypatch.setattr(runner_module, "get_adapter", lambda platform: FakeAdapter(page_loaded=True))
+    fake_chat = FakeChatClientFailsOnNth(fail_on=2)
+    monkeypatch.setattr(runner_module, "get_chat_client", lambda platform: fake_chat)
+
+    session_config = make_session_config(
+        platform="dnl",
+        chat_enabled=True,
+        planned_chat_message_count=3,
+        min_chat_interval_seconds=0.01,
+        max_chat_interval_seconds=0.01,
+    )
+    result = await run_one_session(
+        session_config,
+        browser=object(),
+        proxy_manager=None,
+        console_logger=configure_console_logging("WARNING"),
+        randomizer=Randomizer(seed=1),
+        semaphore=asyncio.Semaphore(5),
+    )
+    # Watch/playback succeeded -- only chat partially failed -- so this
+    # must be PARTIAL, not FAILED (see run_one_session's status logic).
+    assert result.status == SessionStatus.PARTIAL
+    assert result.chat_messages_sent == 1  # only the 1st message succeeded
+    assert "simulated chat failure" in result.error_message
+
+
+@pytest.mark.asyncio
+async def test_run_one_session_chat_disabled_sends_no_messages(monkeypatch):
+    monkeypatch.setattr(runner_module, "get_adapter", lambda platform: FakeAdapter(page_loaded=True))
+    fake_chat = FakeChatClientSuccess()
+    monkeypatch.setattr(runner_module, "get_chat_client", lambda platform: fake_chat)
+
+    session_config = make_session_config(platform="dnl", chat_enabled=False)
+    result = await run_one_session(
+        session_config,
+        browser=object(),
+        proxy_manager=None,
+        console_logger=configure_console_logging("WARNING"),
+        randomizer=Randomizer(seed=1),
+        semaphore=asyncio.Semaphore(5),
+    )
+    assert result.status == SessionStatus.SUCCESS
+    assert result.chat_messages_sent == 0
+    assert fake_chat.sent == []

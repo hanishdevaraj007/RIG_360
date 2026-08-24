@@ -47,6 +47,8 @@ class SessionConfig:
     proxy_identifier: Optional[str] = None
     chat_enabled: bool = False
     planned_chat_message_count: int = 0
+    min_chat_interval_seconds: float = 5.0
+    max_chat_interval_seconds: float = 15.0
     headless: bool = True
 
 

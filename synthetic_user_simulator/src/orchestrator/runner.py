@@ -21,17 +21,21 @@ from playwright.async_api import Browser
 from src.behavior.scheduler import run_watch_behavior
 from src.browser.context import ContextCreationError, ContextOptions, create_context
 from src.browser.manager import BrowserManager
+from src.chat.base import ChatClient, ChatError
+from src.chat.dnl_chat import DNLChatClient
+from src.chat.message_bank import MessageBank
 from src.config.schema import AppConfig
 from src.logging_setup.logger import JsonlSessionLogger, log_event
 from src.models.session import SessionConfig, SessionResult, SessionStatus, new_result
 from src.platforms.base import PlatformAdapter, PlatformError
+from src.platforms.dnl import DNLAdapter
 from src.platforms.youtube import YouTubeAdapter
 from src.proxy.manager import ProxyEntry, ProxyError, ProxyManager, parse_proxy_file
 from src.utils.randomization import Randomizer
 
 
 class UnsupportedPlatformError(Exception):
-    """Raised when no adapter is available yet for the requested platform."""
+    """Raised when no adapter/chat client is available for a platform."""
 
 
 def get_adapter(platform: str) -> PlatformAdapter:
@@ -41,25 +45,50 @@ def get_adapter(platform: str) -> PlatformAdapter:
         platform: 'dnl' or 'youtube' (already validated by AppConfig).
 
     Returns:
-        A PlatformAdapter instance.
+        A PlatformAdapter instance. For 'dnl' this is DNLAdapter, which
+        is a non-functional stub -- every one of its methods raises
+        PlatformError with a message pointing to README.md Section 23
+        (DNL Integration Points), rather than this factory guessing at
+        DNL's real behavior. That error is caught by run_one_session's
+        normal PlatformError handling, so a dnl-platform run still fails
+        cleanly with a clear, informative FAILED SessionResult instead
+        of crashing.
 
     Raises:
-        UnsupportedPlatformError: for 'dnl', since DNLAdapter does not
-            exist yet -- DNL selectors/API details have not been
-            supplied (see README.md Section 23). Raised explicitly so a
-            misconfigured run fails immediately and clearly, instead of
-            a stub adapter silently reporting meaningless results.
+        UnsupportedPlatformError: for any platform name other than
+            'dnl'/'youtube'.
     """
     if platform == "youtube":
         return YouTubeAdapter()
     if platform == "dnl":
-        raise UnsupportedPlatformError(
-            "DNLAdapter is not implemented yet -- DNL page selectors and "
-            "integration details have not been supplied (see README.md "
-            "Section 23). Use platform: youtube until DNLAdapter is "
-            "delivered."
-        )
+        return DNLAdapter()
     raise UnsupportedPlatformError(f"No adapter available for platform '{platform}'")
+
+
+def get_chat_client(platform: str) -> ChatClient:
+    """Return the ChatClient for the given platform name.
+
+    Args:
+        platform: Platform name. Only 'dnl' has a ChatClient at all --
+            chat is not supported for YouTube (README.md Section 4),
+            and AppConfig.validate() already prevents chat_enabled=True
+            with platform='youtube', so this should only ever be called
+            for 'dnl' in practice.
+
+    Returns:
+        A ChatClient instance. For 'dnl' this is DNLChatClient, a
+        non-functional stub -- see its module docstring and README.md
+        Section 23.
+
+    Raises:
+        UnsupportedPlatformError: for any platform other than 'dnl'.
+    """
+    if platform == "dnl":
+        return DNLChatClient()
+    raise UnsupportedPlatformError(
+        f"No chat client available for platform '{platform}' "
+        f"(chat is only supported for DNL, see README.md Section 4)"
+    )
 
 
 def build_session_configs(
@@ -116,10 +145,88 @@ def build_session_configs(
                 start_delay_seconds=base_offset + jitter,
                 chat_enabled=config.chat_enabled,
                 planned_chat_message_count=planned_chat_count,
+                min_chat_interval_seconds=config.min_chat_interval,
+                max_chat_interval_seconds=config.max_chat_interval,
                 headless=config.headless,
             )
         )
     return sessions
+
+
+async def _send_chat_messages(
+    session_config: SessionConfig,
+    page,
+    console_logger: logging.Logger,
+    randomizer: Randomizer,
+    result: SessionResult,
+) -> Optional[str]:
+    """Send this session's planned chat messages, stopping at the first failure.
+
+    Chat failure is treated as a *partial* problem, not a fatal one: the
+    watch/playback portion of the session already succeeded by the time
+    this is called, so a chat failure downgrades the session to PARTIAL
+    rather than FAILED (see run_one_session's status logic).
+
+    Args:
+        session_config: This session's parameters, including
+            planned_chat_message_count and chat interval bounds.
+        page: The session's Page.
+        console_logger: Logger for lifecycle events.
+        randomizer: This session's Randomizer.
+        result: This session's SessionResult, updated in place --
+            chat_messages_sent is incremented for each message actually
+            sent before any failure.
+
+    Returns:
+        None if all planned messages were sent successfully, or an
+        error message string describing the first failure encountered
+        (chat sending stops at that point rather than retrying
+        indefinitely).
+    """
+    try:
+        chat_client = get_chat_client(session_config.platform)
+    except UnsupportedPlatformError as exc:
+        log_event(
+            console_logger,
+            "error",
+            "chat_unavailable",
+            session_id=session_config.session_id,
+            error=str(exc),
+        )
+        return str(exc)
+
+    message_bank = MessageBank()
+
+    for _ in range(session_config.planned_chat_message_count):
+        message = message_bank.random_message(randomizer)
+        try:
+            await chat_client.send_message(page, message)
+        except ChatError as exc:
+            log_event(
+                console_logger,
+                "error",
+                "chat_message_failed",
+                session_id=session_config.session_id,
+                error=str(exc),
+            )
+            return str(exc)
+
+        result.chat_messages_sent += 1
+        log_event(
+            console_logger,
+            "info",
+            "chat_message_sent",
+            session_id=session_config.session_id,
+            count=result.chat_messages_sent,
+        )
+
+        interval = randomizer.uniform_float(
+            session_config.min_chat_interval_seconds,
+            session_config.max_chat_interval_seconds,
+        )
+        await asyncio.sleep(interval)
+
+    return None
 
 
 async def run_one_session(
@@ -212,18 +319,26 @@ async def run_one_session(
             await run_watch_behavior(page, randomizer, session_config.watch_duration_seconds)
             result.actual_watch_duration_seconds = session_config.watch_duration_seconds
 
+            chat_error_message: Optional[str] = None
+            if session_config.chat_enabled and session_config.planned_chat_message_count > 0:
+                chat_error_message = await _send_chat_messages(
+                    session_config, page, console_logger, randomizer, result
+                )
+
             await adapter.close(page)
 
             if proxy_entry is not None and proxy_manager is not None:
                 proxy_manager.mark_success(proxy_entry)
 
-            if observation.page_loaded:
-                result.mark_complete(SessionStatus.SUCCESS)
-            else:
+            if not observation.page_loaded:
                 result.mark_complete(
                     SessionStatus.PARTIAL,
                     error_message=f"page did not appear to load: {observation.detail}",
                 )
+            elif chat_error_message is not None:
+                result.mark_complete(SessionStatus.PARTIAL, error_message=chat_error_message)
+            else:
+                result.mark_complete(SessionStatus.SUCCESS)
 
         except (PlatformError, ContextCreationError, ProxyError, UnsupportedPlatformError) as exc:
             if proxy_entry is not None and proxy_manager is not None:
