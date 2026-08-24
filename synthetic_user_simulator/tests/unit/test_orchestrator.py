@@ -383,3 +383,49 @@ async def test_run_one_session_chat_disabled_sends_no_messages(monkeypatch):
     assert result.status == SessionStatus.SUCCESS
     assert result.chat_messages_sent == 0
     assert fake_chat.sent == []
+
+
+@pytest.mark.asyncio
+async def test_sessions_waiting_for_delay_do_not_consume_semaphore(monkeypatch):
+    monkeypatch.setattr(runner_module, "get_adapter", lambda platform: FakeAdapter(page_loaded=True))
+
+    semaphore = asyncio.Semaphore(1)
+
+    config_a = make_session_config(session_id="0001", start_delay_seconds=0.1)
+    config_b = make_session_config(session_id="0002", start_delay_seconds=0.0)
+
+    task_a = asyncio.create_task(
+        run_one_session(
+            config_a,
+            browser=object(),
+            proxy_manager=None,
+            console_logger=configure_console_logging("WARNING"),
+            randomizer=Randomizer(seed=1),
+            semaphore=semaphore,
+        )
+    )
+    # Give task A a tiny bit of time to start and execute its sleep
+    await asyncio.sleep(0.01)
+
+    task_b = asyncio.create_task(
+        run_one_session(
+            config_b,
+            browser=object(),
+            proxy_manager=None,
+            console_logger=configure_console_logging("WARNING"),
+            randomizer=Randomizer(seed=1),
+            semaphore=semaphore,
+        )
+    )
+
+    done, pending = await asyncio.wait([task_a, task_b], return_when=asyncio.FIRST_COMPLETED)
+    finished_task = list(done)[0]
+
+    # Task B must finish first because Task A is waiting for its delay outside the semaphore,
+    # leaving the semaphore free for B to acquire immediately and complete.
+    assert finished_task is task_b
+
+    res_b = await task_b
+    res_a = await task_a
+    assert res_b.status == SessionStatus.SUCCESS
+    assert res_a.status == SessionStatus.SUCCESS

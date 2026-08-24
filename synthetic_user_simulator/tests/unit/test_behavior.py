@@ -104,7 +104,22 @@ async def test_run_watch_behavior_bad_interval_bounds_raises():
 
 
 @pytest.mark.asyncio
-async def test_run_watch_behavior_is_reproducible_with_same_seed():
+async def test_run_watch_behavior_is_reproducible_with_same_seed(monkeypatch):
+    import time
+    import asyncio
+
+    current_time = 0.0
+
+    def mock_monotonic():
+        return current_time
+
+    async def mock_sleep(seconds):
+        nonlocal current_time
+        current_time += seconds
+
+    monkeypatch.setattr(time, "monotonic", mock_monotonic)
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
     page1 = FakePage()
     page2 = FakePage()
     count1 = await run_watch_behavior(
@@ -114,6 +129,9 @@ async def test_run_watch_behavior_is_reproducible_with_same_seed():
         min_action_interval_seconds=0.01,
         max_action_interval_seconds=0.02,
     )
+
+    current_time = 0.0
+
     count2 = await run_watch_behavior(
         page2,
         Randomizer(seed=7),

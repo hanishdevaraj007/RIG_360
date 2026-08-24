@@ -266,8 +266,8 @@ async def run_one_session(
     context = None
     proxy_entry: Optional[ProxyEntry] = None
 
+    await asyncio.sleep(session_config.start_delay_seconds)
     async with semaphore:
-        await asyncio.sleep(session_config.start_delay_seconds)
         log_event(
             console_logger,
             "info",
